@@ -1,0 +1,191 @@
+{
+  "info": {
+    "name": "Distributed Order Processing - Phase 4",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "01 User Service",
+      "item": [
+        {
+          "name": "Create User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.environment.set(\"userId\", jsonData.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"email\": \"test-user-phase4@example.com\",\n    \"name\": \"Phase 4 Tester\"\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3000/users",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["users"]
+            }
+          }
+        },
+        {
+          "name": "Get User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/users/{{userId}}",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["users", "{{userId}}"]
+            }
+          }
+        },
+        {
+          "name": "Internal User Verification",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Service-Auth", "value": "dev-service-token-2024" }
+            ],
+            "url": {
+              "raw": "http://localhost:3000/internal/users/{{userId}}/verify",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["internal", "users", "{{userId}}", "verify"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Order Service",
+      "item": [
+        {
+          "name": "Create Order - Existing User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.environment.set(\"orderId\", jsonData.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"userId\": \"{{userId}}\",\n    \"items\": [\n        {\n            \"productName\": \"Wireless Keyboard\",\n            \"quantity\": 1,\n            \"unitPrice\": 49.99\n        }\n    ]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3001/orders",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders"]
+            }
+          }
+        },
+        {
+          "name": "Create Order - Unknown User",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"userId\": \"00000000-0000-0000-0000-000000000000\",\n    \"items\": [\n        {\n            \"productName\": \"Should Fail\",\n            \"quantity\": 1,\n            \"unitPrice\": 10.00\n        }\n    ]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3001/orders",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders"]
+            }
+          }
+        },
+        {
+          "name": "Get Order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3001/orders/{{orderId}}",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders", "{{orderId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Authentication",
+      "item": [
+        {
+          "name": "Missing Service Token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3000/internal/users/{{userId}}/verify",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["internal", "users", "{{userId}}", "verify"]
+            }
+          }
+        },
+        {
+          "name": "Invalid Service Token",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Service-Auth", "value": "wrong-token" }
+            ],
+            "url": {
+              "raw": "http://localhost:3000/internal/users/{{userId}}/verify",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3000",
+              "path": ["internal", "users", "{{userId}}", "verify"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

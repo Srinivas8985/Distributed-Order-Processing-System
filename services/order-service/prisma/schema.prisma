@@ -1,0 +1,55 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Order {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  totalAmount Decimal  @map("total_amount") @db.Decimal(12, 2)
+  status      String   @default("CONFIRMED")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  items       OrderItem[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid())
+  orderId     String   @map("order_id")
+  productName String   @map("product_name")
+  quantity    Int
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(12, 2)
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+model OutboxEvent {
+  id        String   @id @default(uuid())
+  eventType String   @map("event_type")
+  payload   Json
+  status    String   @default("PENDING")
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("outbox_events")
+}
+
+model IdempotencyKey {
+  key          String   @id
+  requestHash  String   @map("request_hash")
+  responseCode Int?     @map("response_code")
+  responseBody Json?    @map("response_body")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("idempotency_keys")
+}

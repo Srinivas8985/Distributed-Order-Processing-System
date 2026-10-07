@@ -1,0 +1,148 @@
+{
+  "info": {
+    "name": "Distributed Order Processing - Phase 3",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Order Service",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3001/health",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3001/ready",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["ready"]
+            }
+          }
+        },
+        {
+          "name": "Create Order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    pm.environment.set(\"orderId\", jsonData.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"userId\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"items\": [\n        {\n            \"productName\": \"Wireless Mouse\",\n            \"quantity\": 2,\n            \"unitPrice\": 29.99\n        },\n        {\n            \"productName\": \"USB-C Cable\",\n            \"quantity\": 1,\n            \"unitPrice\": 12.50\n        }\n    ]\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3001/orders",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders"]
+            }
+          }
+        },
+        {
+          "name": "Get Order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3001/orders/{{orderId}}",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders", "{{orderId}}"]
+            }
+          }
+        },
+        {
+          "name": "Invalid Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"userId\": \"not-a-uuid\",\n    \"items\": []\n}"
+            },
+            "url": {
+              "raw": "http://localhost:3001/orders",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders"]
+            }
+          }
+        },
+        {
+          "name": "Order Not Found",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3001/orders/00000000-0000-0000-0000-000000000000",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders", "00000000-0000-0000-0000-000000000000"]
+            }
+          }
+        },
+        {
+          "name": "Invalid Order ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:3001/orders/not-an-id",
+              "protocol": "http",
+              "host": ["localhost"],
+              "port": "3001",
+              "path": ["orders", "not-an-id"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
