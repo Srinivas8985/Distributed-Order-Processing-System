@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { ResiliencePolicy } from './resilience/resilience-policy';
 import { logger } from '../lib/logger';
+import { externalRequestCounter, timeoutCounter } from '../lib/metrics';
 
 export class UserServiceClient {
   private baseUrl: string;
@@ -43,6 +44,8 @@ export class UserServiceClient {
           signal
         });
 
+        externalRequestCounter.inc({ service: 'order-service', target: 'user-service', status: response.status.toString() });
+
         if (response.status === 200) {
           return true;
         }
@@ -83,6 +86,10 @@ export class UserServiceClient {
           timeoutErr.code = 'USER_SERVICE_TIMEOUT';
           timeoutErr.retryable = true;
           timeoutErr.isCircuitFailure = true;
+          
+          timeoutCounter.inc({ service: 'order-service', target: 'user-service' });
+          externalRequestCounter.inc({ service: 'order-service', target: 'user-service', status: 'timeout' });
+          
           throw timeoutErr;
         }
         
@@ -100,6 +107,9 @@ export class UserServiceClient {
           networkErr.code = 'USER_SERVICE_UNAVAILABLE';
           networkErr.retryable = true;
           networkErr.isCircuitFailure = true;
+          
+          externalRequestCounter.inc({ service: 'order-service', target: 'user-service', status: 'unavailable' });
+          
           throw networkErr;
         }
         

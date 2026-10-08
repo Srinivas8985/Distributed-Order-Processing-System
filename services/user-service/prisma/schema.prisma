@@ -32,3 +32,21 @@ model ProcessedEvent {
 
   @@map("processed_events")
 }
+
+model DeadLetterEvent {
+  id              String   @id @default(uuid())
+  eventId         String   @map("event_id")
+  eventType       String   @map("event_type")
+  routingKey      String   @map("routing_key")
+  payload         Json
+  attemptCount    Int      @map("attempt_count")
+  failureReason   String   @map("failure_reason")
+  firstFailureAt  DateTime @map("first_failure_at")
+  latestFailureAt DateTime @map("latest_failure_at")
+  replayStatus    String   @default("PENDING") @map("replay_status") // PENDING, REPLAYED, FAILED
+  replayCount     Int      @default(0) @map("replay_count")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("dead_letter_events")
+}

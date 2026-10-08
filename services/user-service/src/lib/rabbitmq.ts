@@ -2,6 +2,8 @@ import amqplib, { Connection, Channel, ConsumeMessage } from 'amqplib';
 import { config } from '../config';
 import { logger } from './logger';
 import { handleOrderCreated } from '../events/consumer';
+import { prisma } from './prisma';
+import { eventProcessingCounter, dlqTransfersCounter } from './metrics';
 
 let connection: any = null;
 let channel: any = null;
@@ -11,6 +13,9 @@ const EXCHANGE_NAME = 'order.events';
 const QUEUE_NAME = 'user.activity.queue';
 const ROUTING_KEY = 'order.created';
 
+const DLX_NAME = 'order.events.dlx';
+const DLQ_NAME = 'user.activity.dlq';
+
 export const connectRabbitMQ = async () => {
   if (connection || isConnecting) return;
   isConnecting = true;
@@ -19,19 +24,34 @@ export const connectRabbitMQ = async () => {
     connection = await amqplib.connect(config.RABBITMQ_URL);
     channel = await connection.createChannel();
     
-    // Set prefetch according to Phase 0 (10)
     await channel.prefetch(10);
     
+    // Main Exchange
     await channel.assertExchange(EXCHANGE_NAME, 'topic', {
       durable: true,
       autoDelete: false
     });
+
+    // DLX Exchange
+    await channel.assertExchange(DLX_NAME, 'topic', {
+      durable: true,
+      autoDelete: false
+    });
     
+    // DLQ Queue
+    await channel.assertQueue(DLQ_NAME, {
+      durable: true
+    });
+    await channel.bindQueue(DLQ_NAME, DLX_NAME, '#');
+
+    // Main Queue
     await channel.assertQueue(QUEUE_NAME, {
       durable: true,
-      // Phase 7 explicitly forbids implementing DLQ, so we omit x-dead-letter-exchange
+      arguments: {
+        'x-dead-letter-exchange': DLX_NAME
+      }
     });
-    logger.info({ event: 'rabbitmq_queue_declared', queue: QUEUE_NAME });
+    logger.info({ event: 'rabbitmq_queue_declared', queue: QUEUE_NAME, dlq: DLQ_NAME });
     
     await channel.bindQueue(QUEUE_NAME, EXCHANGE_NAME, ROUTING_KEY);
     
@@ -51,6 +71,7 @@ export const connectRabbitMQ = async () => {
 
     // Start consuming
     startConsumer();
+    startDlqArchiver();
 
   } catch (err: any) {
     logger.error({ event: 'rabbitmq_connection_failed', message: err.message });
@@ -60,46 +81,143 @@ export const connectRabbitMQ = async () => {
   }
 };
 
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
 const startConsumer = () => {
   if (!channel) return;
   
   channel.consume(QUEUE_NAME, async (msg: ConsumeMessage | null) => {
     if (!msg) return;
 
+    let payload: any;
     try {
-      await handleOrderCreated(msg);
+      payload = JSON.parse(msg.content.toString());
+    } catch (e) {
+      // Invalid JSON is a permanent error. Send to DLQ immediately.
+      await moveToDlq(msg, 'Invalid JSON format', 1);
       channel!.ack(msg);
-      logger.info({ event: 'event_acknowledged', messageId: msg.properties.messageId });
-    } catch (err: any) {
-      logger.error({ event: 'event_processing_failed', error: err.message, stack: err.stack });
-      // In Phase 7 we nack without DLQ yet. Phase 0 says requeue for retry.
-      // But we must prevent infinite loops. We'll check x-retry-count.
-      
-      const headers = msg.properties.headers || {};
-      const retryCount = (headers['x-retry-count'] || 0) as number;
-      
-      if (retryCount >= 3) {
-        // Discard after 3 retries (since we don't have DLQ in Phase 7)
-        logger.error({ event: 'event_discarded', reason: 'max_retries_exceeded', messageId: msg.properties.messageId });
-        channel!.nack(msg, false, false);
-      } else {
-        // Unfortunately standard RabbitMQ doesn't easily let you increment headers on a simple nack requeue
-        // without republishing. To keep it simple for Phase 7 (no DLQ/complex retry), we just nack with requeue=false
-        // Wait, Phase 0 says: "Processing fails (transient) -> nack(msg, false, true)"
-        // "Processing fails (3rd time) -> nack(msg, false, false)"
-        // But since we can't easily track retryCount without republishing or DLX routing,
-        // we'll just discard it if it's an unrecoverable validation error, else we nack(false, false) for now 
-        // to avoid infinite fast-loops that crush CPU.
-        // Actually, if validation fails we should discard it.
-        if (err.name === 'ZodError' || err.code === 'VALIDATION_ERROR') {
-          channel!.nack(msg, false, false);
-        } else {
-          // If it's a DB error, we can drop it for now in Phase 7 to prevent infinite loop.
-          // True reliable retries rely on DLX and TTL which are Phase 8.
-          channel!.nack(msg, false, false); 
+      return;
+    }
+
+    const eventId = payload.eventId || msg.properties.messageId || 'unknown';
+    const MAX_ATTEMPTS = 3;
+    let attempts = 0;
+    
+    while (attempts < MAX_ATTEMPTS) {
+      attempts++;
+      try {
+        await handleOrderCreated(msg);
+        channel!.ack(msg);
+        eventProcessingCounter.inc({ event_type: payload.eventType || 'UNKNOWN', status: 'success', service: 'user-service' });
+        return; // Success
+      } catch (err: any) {
+        logger.error({ 
+          event: 'event_processing_failed', 
+          eventId, 
+          attempt: attempts, 
+          error: err.message 
+        });
+
+        const isPermanent = err.name === 'ZodError' || err.code === 'VALIDATION_ERROR';
+        
+        if (isPermanent || attempts >= MAX_ATTEMPTS) {
+          logger.warn({
+            event: 'event_moved_to_dlq',
+            eventId,
+            reason: isPermanent ? 'permanent_failure' : 'max_retries_exceeded'
+          });
+          
+          await moveToDlq(msg, err.message, attempts);
+          eventProcessingCounter.inc({ event_type: payload.eventType || 'UNKNOWN', status: 'failed', service: 'user-service' });
+          channel!.ack(msg);
+          return;
         }
+
+        // Transient failure, wait before retry
+        logger.info({ event: 'event_retry_scheduled', eventId, attempt: attempts });
+        await delay(1000 * Math.pow(2, attempts)); // Exponential backoff: 2s, 4s...
       }
     }
+  });
+};
+
+const moveToDlq = async (msg: ConsumeMessage, reason: string, attempts: number) => {
+  if (!channel) return;
+  
+  const headers = msg.properties.headers || {};
+  headers['x-failure-reason'] = reason;
+  headers['x-attempt-count'] = attempts;
+  headers['x-first-failure-timestamp'] = headers['x-first-failure-timestamp'] || Date.now();
+  headers['x-latest-failure-timestamp'] = Date.now();
+  headers['x-original-routing-key'] = msg.fields.routingKey;
+
+  channel.publish(DLX_NAME, msg.fields.routingKey, msg.content, {
+    persistent: true,
+    headers,
+    messageId: msg.properties.messageId,
+    correlationId: msg.properties.correlationId,
+    contentType: msg.properties.contentType
+  });
+  
+  const payload = JSON.parse(msg.content.toString());
+  dlqTransfersCounter.inc({ event_type: payload.eventType || 'UNKNOWN', service: 'user-service' });
+};
+
+const startDlqArchiver = () => {
+  if (!channel) return;
+
+  channel.consume(DLQ_NAME, async (msg: ConsumeMessage | null) => {
+    if (!msg) return;
+
+    try {
+      let payload: any = {};
+      try {
+        payload = JSON.parse(msg.content.toString());
+      } catch(e) {}
+
+      const headers = msg.properties.headers || {};
+      const failureReason = headers['x-failure-reason']?.toString() || 'Unknown failure';
+      const attemptCount = headers['x-attempt-count'] ? parseInt(headers['x-attempt-count']) : 1;
+      const originalRoutingKey = headers['x-original-routing-key']?.toString() || msg.fields.routingKey;
+      
+      const eventId = payload.eventId || msg.properties.messageId || 'unknown';
+      const eventType = payload.eventType || 'UNKNOWN';
+
+      await prisma.deadLetterEvent.create({
+        data: {
+          eventId,
+          eventType,
+          routingKey: originalRoutingKey,
+          payload,
+          attemptCount,
+          failureReason,
+          firstFailureAt: new Date(headers['x-first-failure-timestamp'] || Date.now()),
+          latestFailureAt: new Date(headers['x-latest-failure-timestamp'] || Date.now()),
+          replayStatus: 'PENDING',
+          replayCount: 0
+        }
+      });
+
+      channel!.ack(msg);
+      logger.info({ event: 'dlq_event_archived', eventId });
+    } catch (err: any) {
+      logger.error({ event: 'dlq_archiver_failed', error: err.message });
+      // If saving to DB fails, leave it in the RabbitMQ DLQ
+      channel!.nack(msg, false, true);
+    }
+  });
+};
+
+export const publishToExchange = async (exchange: string, routingKey: string, message: any): Promise<void> => {
+  if (!channel) throw new Error('RabbitMQ channel not established');
+  
+  const payload = Buffer.from(JSON.stringify(message));
+  channel.publish(exchange, routingKey, payload, {
+    persistent: true,
+    contentType: 'application/json',
+    messageId: message.eventId,
+    correlationId: message.correlationId,
+    timestamp: Date.now()
   });
 };
 

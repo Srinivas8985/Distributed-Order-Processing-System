@@ -1,3 +1,4 @@
+import './instrumentation';
 import app from './app';
 import { config } from './config';
 import { logger } from './lib/logger';

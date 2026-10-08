@@ -63,13 +63,14 @@ services:
     environment:
       DATABASE_URL: postgresql://user:password@user-db:5432/userdb
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      OTEL_SERVICE_NAME: user-service
     depends_on:
       user-db:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -87,17 +88,53 @@ services:
       DATABASE_URL: postgresql://user:password@order-db:5432/orderdb
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       USER_SERVICE_URL: http://user-service:3000
+      OTEL_SERVICE_NAME: order-service
     depends_on:
       order-db:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
     restart: on-failure
+
+  reliability-console:
+    build:
+      context: ./reliability-console
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3000"
+    environment:
+      USER_SERVICE_URL: http://user-service:3000
+      ORDER_SERVICE_URL: http://order-service:3001
+      PROMETHEUS_URL: http://prometheus:9090
+      INTERNAL_SERVICE_TOKEN: dev-service-token-2024
+    depends_on:
+      user-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    restart: on-failure
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Jaeger UI
+      - "4318:4318"   # OTLP HTTP receiver
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090" # Prometheus UI
+    restart: unless-stopped
 
 volumes:
   user-db-data:

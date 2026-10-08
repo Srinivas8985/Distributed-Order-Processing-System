@@ -1,4 +1,5 @@
 import { logger } from '../../lib/logger';
+import { circuitBreakerCounter } from '../../lib/metrics';
 
 export enum CircuitState {
   CLOSED = 'CLOSED',
@@ -52,6 +53,7 @@ export class CircuitBreaker {
         circuit: this.name,
         circuitState: this.state
       });
+      circuitBreakerCounter.inc({ service: 'order-service', state: 'REJECTED', target: this.name });
       throw new CircuitBreakerOpenError();
     }
 
@@ -116,6 +118,7 @@ export class CircuitBreaker {
       circuit: this.name,
       failures: this.failures
     });
+    circuitBreakerCounter.inc({ service: 'order-service', state: 'OPEN', target: this.name });
   }
 
   private transitionToHalfOpen() {
@@ -126,6 +129,7 @@ export class CircuitBreaker {
       event: 'circuit_breaker_half_open',
       circuit: this.name
     });
+    circuitBreakerCounter.inc({ service: 'order-service', state: 'HALF_OPEN', target: this.name });
   }
 
   private transitionToClosed() {
@@ -135,5 +139,6 @@ export class CircuitBreaker {
       event: 'circuit_breaker_closed',
       circuit: this.name
     });
+    circuitBreakerCounter.inc({ service: 'order-service', state: 'CLOSED', target: this.name });
   }
 }

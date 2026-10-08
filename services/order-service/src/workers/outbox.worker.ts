@@ -1,6 +1,8 @@
 import { prisma } from '../lib/prisma';
 import { publishEvent, checkRabbitMQConnection } from '../lib/rabbitmq';
 import { logger } from '../lib/logger';
+import { faultEngine } from '../lib/fault-engine';
+import { outboxMetrics } from '../lib/metrics';
 
 export class OutboxWorker {
   private isRunning = false;
@@ -48,6 +50,8 @@ export class OutboxWorker {
   }
 
   private async processOutboxEvents() {
+    outboxMetrics.pending.set(await prisma.outboxEvent.count({ where: { status: 'PENDING' } }));
+
     const events = await prisma.outboxEvent.findMany({
       where: {
         status: 'PENDING',
@@ -78,6 +82,8 @@ export class OutboxWorker {
         // Determine routing key based on event type
         const routingKey = event.eventType === 'ORDER_CREATED' ? 'order.created' : 'unknown.event';
 
+        await faultEngine.evaluateFaultsByComponent('publisher', event.id);
+
         // Publish to RabbitMQ
         await publishEvent(routingKey, payload);
 
@@ -92,6 +98,7 @@ export class OutboxWorker {
           eventId: event.id,
           eventType: event.eventType
         });
+        outboxMetrics.published.inc({ service: 'order-service' });
       } catch (error: any) {
         // Handle failure
         await prisma.outboxEvent.update({
@@ -113,6 +120,7 @@ export class OutboxWorker {
             event: 'outbox_max_attempts_reached',
             eventId: event.id
           });
+          outboxMetrics.failed.inc({ service: 'order-service' });
         }
       }
     }

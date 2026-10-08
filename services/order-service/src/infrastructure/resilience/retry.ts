@@ -1,4 +1,5 @@
 import { logger } from '../../lib/logger';
+import { retryCounter } from '../../lib/metrics';
 
 export interface RetryConfig {
   maxAttempts: number; // total attempts (1 initial + N retries)
@@ -43,6 +44,8 @@ export class Retry {
           delayMs: Math.round(delay),
           error: error.message
         });
+        
+        retryCounter.inc({ service: 'order-service', target: this.name });
 
         await this.delayProvider(delay);
         attempt++;

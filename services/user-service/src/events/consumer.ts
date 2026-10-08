@@ -3,6 +3,7 @@ import { eventEnvelopeSchema } from './event.schema';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { ApplicationError } from '../utils/errors';
+import { faultEngine } from '../lib/fault-engine';
 
 export const handleOrderCreated = async (msg: ConsumeMessage) => {
   const content = msg.content.toString();
@@ -27,6 +28,8 @@ export const handleOrderCreated = async (msg: ConsumeMessage) => {
 
   // Check if processed and process in a transaction
   try {
+    await faultEngine.evaluateFaultsByComponent('consumer', validatedEvent.correlationId);
+
     await prisma.$transaction(async (tx) => {
       // a. Check processed_events for eventId
       const existing = await tx.processedEvent.findUnique({

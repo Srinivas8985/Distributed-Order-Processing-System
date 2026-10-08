@@ -12,8 +12,8 @@ This project implements a robust, distributed microservices architecture consist
 - [x] **Phase 6:** Idempotency & Concurrency Management
 - [x] **Phase 7:** Asynchronous Events (RabbitMQ)
 - [x] **Phase 8:** Outbox Pattern & Event Reliability
-- [ ] **Phase 9:** Reliability Console & DLQ
-
+- [x] **Phase 9:** Dead Letter Queue & Event Replay
+- [x] **Phase 10:** Distributed Reliability Console
 ---
 
 ## Phase 6: Idempotency & Concurrency
@@ -302,3 +302,102 @@ Neither service directly queries the other service's database. Cross-service com
 [x] Postman collection
 [x] Architecture diagram
 [x] Automated tests
+[x] Dead Letter Queue & Event Replay (Phase 9)
+
+---
+
+## Phase 9: Dead Letter Queue & Event Replay
+
+### Why the DLQ Exists
+In any message-driven system, "poison messages" (events that cannot be processed due to invalid payload or persistent downstream failures) can block a queue indefinitely if retried forever. The Dead Letter Queue (DLQ) topology exists to safely isolate these failing events so they do not degrade the processing of subsequent valid events, while ensuring zero data loss.
+
+### Retry vs DLQ Behavior
+The consumer implements bounded retries to distinguish between transient and permanent failures:
+- **Transient Failures:** Network glitches or temporary DB locks are retried locally using an exponential backoff (e.g., up to 3 times).
+- **Permanent Failures:** Invalid JSON or Zod schema validation failures are immediately rejected without retry.
+If a message exceeds its maximum retry attempts, it is manually republished to the Dead Letter Exchange (`order.events.dlx`) with enriched metadata (attempt counts, failure reasons, timestamps) and then safely acknowledged from the main queue.
+
+### Poison Message Lifecycle
+When a message reaches the DLX, it is routed to the `user.activity.dlq` queue. A dedicated background DLQ Archiver safely consumes from this queue and persists the enriched message into a `dead_letter_events` PostgreSQL table. This allows operations teams to easily query, list, and diagnose failed events via an internal API without messing with raw RabbitMQ HTTP API calls.
+
+### How Replay Works
+An internal administrative API (`POST /internal/dlq/:id/replay`) allows for controlled event replay:
+1. It validates the failed event from the `dead_letter_events` database.
+2. It verifies the event hasn't already been successfully processed (idempotency safeguard).
+3. It republishes the original payload directly back to the main `order.events` exchange.
+4. It updates the DB status to `REPLAYED`.
+
+### How Replay Remains Idempotent
+Replays are fundamentally safe because they leverage the Phase 7 **Consumer Idempotency** pattern. Before replaying, the API explicitly checks the `processed_events` table. If the event somehow succeeded during a crash but still ended up in the DLQ, the replay request is rejected. Furthermore, the consumer itself verifies `processed_events` again upon consumption, guaranteeing that a duplicated replay never produces duplicate `activity_history` entries.
+
+### Event Ownership
+The `dead_letter_events` table is strictly owned by the User Service, as it represents the *consumer's* failure state. The Order Service remains completely unaware of the User Service's DLQ mechanisms, preserving strict database isolation.
+
+### RabbitMQ Unavailability During Replay
+If RabbitMQ is temporarily unavailable when a replay is attempted, the API request gracefully fails, marks the replay attempt as `FAILED` in the database, and increments the `replayCount`. The event remains safely persisted in the database and can be retried once RabbitMQ is restored.
+
+*Note: The architecture relies on Transactional Outbox and Idempotent Consumers to provide **at-least-once delivery**. It does not claim "zero event loss" or "exactly-once delivery," but rather robust fault tolerance.*
+
+---
+
+## Phase 10: Distributed Reliability Console
+
+The Reliability Console is a Next.js-based control plane for monitoring and managing the distributed environment.
+
+### Control Plane Architecture
+The Reliability Console acts strictly as a control plane. It does not perform business logic or mutate databases directly; it interacts with backend services securely via authenticated internal APIs.
+
+### Dashboard & Health Monitoring
+Provides a unified view of all backend service health checks, database status, and RabbitMQ connectivity in a dynamic React dashboard.
+
+### Outbox & DLQ Monitoring
+Tracks pending, published, and failed events from the Outbox, alongside a visual management interface for the Dead Letter Queue.
+
+### Administrative Security
+Replays and administrative actions are protected by `X-Service-Auth` and `INTERNAL_SERVICE_TOKEN` environment variables, ensuring that public users cannot trigger control-plane operations. The frontend exclusively uses Next.js Server Actions to execute mutations, guaranteeing no secrets leak to the client side.
+
+---
+
+## Phase 11: Failure Simulation Engine
+
+### Purpose
+To prove the system's resilience, the Failure Simulation Engine allows for safe, controlled fault injection in development and demo environments. It allows the Reliability Console to simulate application-level failures (e.g., API timeouts, Outbox publisher crashes, Consumer failures) without performing dangerous OS-level operations.
+
+### Security Controls
+- Fault injection is strictly disabled in `production` environments via hardcoded checks.
+- Activating a fault requires the internal service token.
+- Input configuration is validated using Zod schemas.
+- It operates purely at the application level; it does not execute shell commands, kill Docker containers, or modify the host OS.
+
+### Supported Faults
+- **User Service:** API Delay (simulate timeout/circuit breaker), API Failure (500)
+- **Order Service:** API Delay, API Failure (500), Outbox Publisher Failure (simulates background worker failure)
+- **Consumer:** Consumer Failure (simulates crashing on processing a RabbitMQ message)
+
+---
+
+## Phase 12: Advanced Observability & Distributed Tracing
+
+### Distributed Tracing
+OpenTelemetry (`@opentelemetry/sdk-node`) is integrated to provide deep insights into the lifecycle of an order request. It automatically propagates the trace context across HTTP boundaries (using standard headers like `traceparent`) and RabbitMQ boundaries.
+
+### Example Trace Lifecycle
+When tracking an order from start to finish:
+1. `POST /orders` creates an entry HTTP span.
+2. The Order Service HTTP client creates an outbound HTTP span when verifying the user.
+3. The User Service creates a receiving HTTP span for verification.
+4. The Outbox Worker publishes the event and creates an AMQP publish span.
+5. The User Service consumer receives the AMQP message (correlated to the original trace) and creates a consume span.
+
+All these spans can be visualized holistically within the **Jaeger UI** (exposed on port `16686`).
+
+### Prometheus Metrics
+We expose business and infrastructure metrics via a Prometheus `/metrics` endpoint using `prom-client`:
+- **HTTP Metrics:** Request duration histograms (`http_request_duration_ms`) and total counts (`http_requests_total`).
+- **Resilience Metrics:** Retry attempts (`retry_attempts_total`), circuit breaker state changes (`circuit_breaker_events_total`), and external API timeouts (`external_timeout_total`).
+- **Outbox Metrics:** Pending events (`outbox_pending_events`), successful publishes, and failed publishes.
+- **Consumer/DLQ Metrics:** Successfully processed events and events moved to the DLQ.
+
+### Structured Logging
+Pino logging is configured to automatically pull the active context (using `AsyncLocalStorage` and OpenTelemetry context) so that every log naturally includes the `requestId`, `traceId`, and `spanId`. This guarantees high observability without polluting business code with repetitive logging code.
+
